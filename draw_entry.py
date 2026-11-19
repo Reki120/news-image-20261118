@@ -1,247 +1,213 @@
 #!/usr/bin/env python3
-"""Generate the 18 November 2026 world-news summary image (1024x1024 PNG).
+"""Draw entry.png: one image summing up the world news of
+Wednesday, 18 November 2026, from the full day's reporting.
 
-One clear composition: a masthead with the date, one large Gulf scene for
-the main story (US-Iran exchanges over Bahrain), three secondary cards
-(Quad in Manila, NVIDIA's record quarter, Kerch bridge hit again), and a
-source footer. Everything is drawn with PIL primitives; no network, no
-timestamps and no randomness, so two runs write identical bytes.
-
-Stories (all verified 18 Nov 2026 against Reuters / AP / Al Jazeera / CNN):
-- MAIN: Iran's drones intercepted over Bahrain (third attack in five
-  days); US jets hit an IRGC missile site on Qeshm Island; Bahrain
-  all-clear after an overnight alert; Kuwait's air defences also
-  countered drones.
-- Quad leaders meet in Manila (US, Japan, Australia, India) for the
-  first time in two years, ahead of APEC in Shenzhen.
-- NVIDIA posts a record $115.8bn quarter, up 103%; board rules out
-  Jensen Huang's return as CEO; Colette Kress is interim CEO.
-- Ukraine strikes the Kerch bridge for a second day as Russia pounds
-  Kyiv crossings.
+Newspaper front-page layout, navy/gold palette:
+  masthead with the date, one large Gulf scene for the main story,
+  three secondary cards, and a source footer.
+Deterministic: no network, no timestamps, no randomness. Pillow only.
+Output: entry.png in the output directory ($MAKEFUN_OUTPUT_DIR, or the
+directory holding this script when the variable is unset).
 """
-import math
 import os
 
 from PIL import Image, ImageDraw, ImageFont
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.environ.get("MAKEFUN_OUTPUT_DIR") or HERE
+OUT = os.path.join(OUT_DIR, "entry.png")
+
 W, H = 1024, 1024
-OUT = os.path.join(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"),
-                   "entry.png")
 
-NAVY = (10, 26, 46)
-PANEL = (16, 38, 62)
-PANEL_LINE = (42, 74, 104)
-GOLD = (232, 184, 75)
-WHITE = (245, 247, 250)
-MUTED = (196, 210, 224)
-SKY_TOP = (24, 42, 71)
-SKY_BOT = (198, 90, 46)
-SEA = (12, 36, 54)
-WAVE = (46, 90, 122)
-LAND = (18, 24, 34)
-DOME = (205, 212, 218)
-RED = (220, 60, 45)
-ORANGE = (255, 154, 31)
-FLAME = (255, 122, 26)
+PAPER = (247, 243, 234)      # warm off-white newsprint
+INK = (18, 24, 34)           # near-black text
+NAVY = (14, 42, 71)          # masthead / sea
+NAVY_DARK = (9, 30, 52)
+NAVY_LIGHT = (24, 62, 99)
+GOLD = (201, 168, 106)
+GOLD_DARK = (176, 140, 78)
+RED = (178, 44, 34)
+ORANGE = (224, 122, 42)
+SAND = (214, 190, 148)
+CARD = (255, 255, 255)
+MUTED = (92, 96, 104)
+
+FONTS = os.path.join(HERE, "fonts")
 
 
-def load_font(name, size):
-    """DejaVu from the repo's fonts/ dir, else the system copy."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    for path in (os.path.join(here, "fonts", name),
-                 "/usr/share/fonts/truetype/dejavu/" + name):
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
+def font(bold, size):
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    return ImageFont.truetype(os.path.join(FONTS, name), size)
 
 
-BOLD = lambda s: load_font("DejaVuSans-Bold.ttf", s)      # noqa: E731
-REG = lambda s: load_font("DejaVuSans.ttf", s)            # noqa: E731
-
-
-def wrap(draw, text, font, width):
+def wrap(draw, text, fnt, max_w):
+    """Greedy word wrap; returns a list of lines that fit max_w."""
     lines, cur = [], ""
-    for word in text.split():
-        trial = (cur + " " + word).strip()
-        if draw.textlength(trial, font=font) <= width:
+    for word in text.split(" "):
+        trial = word if not cur else cur + " " + word
+        if draw.textlength(trial, font=fnt) <= max_w:
             cur = trial
         else:
-            lines.append(cur)
+            if cur:
+                lines.append(cur)
             cur = word
     if cur:
         lines.append(cur)
     return lines
 
 
-def vgrad(draw, box, top, bottom):
-    x0, y0, x1, y1 = box
-    n = max(y1 - y0, 1)
-    for i in range(n):
-        t = i / max(n - 1, 1)
-        c = tuple(int(top[j] + (bottom[j] - top[j]) * t) for j in range(3))
-        draw.line([(x0, y0 + i), (x1, y0 + i)], fill=c)
+def text_block(draw, x, y, lines, fnt, fill, leading=None):
+    """Draw lines of text; returns the y just below the last line."""
+    lh = leading if leading is not None else int(fnt.size * 1.28)
+    for line in lines:
+        draw.text((x, y), line, font=fnt, fill=fill)
+        y += lh
+    return y
 
 
-def star(draw, cx, cy, r_out, r_in, points, fill):
+def burst(draw, cx, cy, r, fill):
+    """Eight-point explosion starburst centred on (cx, cy)."""
+    import math
     pts = []
-    for i in range(points * 2):
-        r = r_out if i % 2 == 0 else r_in
-        a = math.pi * i / points - math.pi / 2
-        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    for i in range(16):
+        ang = math.pi * i / 8.0
+        rad = r if i % 2 == 0 else r * 0.42
+        pts.append((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
     draw.polygon(pts, fill=fill)
 
 
-def drone(draw, x, y, s):
-    draw.polygon([(x, y - s), (x + s, y + s * 0.7),
-                  (x, y + s * 0.35), (x - s, y + s * 0.7)], fill=(22, 22, 30))
-
-
-def bezier(p0, p1, p2, steps):
+def arc_pts(p0, p1, lift, n=24):
+    """Points along a quadratic bezier from p0 to p1, lifted upward."""
+    import math
+    mx, my = (p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0 - lift
     pts = []
-    for i in range(steps + 1):
-        t = i / steps
-        x = (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t ** 2 * p2[0]
-        y = (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t ** 2 * p2[1]
+    for i in range(n + 1):
+        t = i / n
+        x = (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * mx + t ** 2 * p1[0]
+        y = (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * my + t ** 2 * p1[1]
         pts.append((x, y))
     return pts
 
 
-def build():
-    img = Image.new("RGB", (W, H), NAVY)
+def main():
+    img = Image.new("RGB", (W, H), PAPER)
     d = ImageDraw.Draw(img)
-    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(ov)
 
-    # ---- masthead ---------------------------------------------------
-    d.text((36, 24), "18 NOVEMBER 2026", font=BOLD(44), fill=GOLD)
-    tag = "THE WORLD IN ONE IMAGE"
-    d.text((988 - d.textlength(tag, font=BOLD(20)), 42), tag,
-           font=BOLD(20), fill=MUTED)
-    d.rectangle([0, 100, 1024, 104], fill=GOLD)
+    # ---- Masthead -------------------------------------------------
+    d.rectangle([0, 0, W, 118], fill=NAVY)
+    d.rectangle([0, 118, W, 122], fill=GOLD)
+    d.text((24, 14), "THE WORLD IN ONE IMAGE",
+           font=font(True, 46), fill=(255, 255, 255))
+    d.text((24, 74), "Wednesday, 18 November 2026  ·  the full day's news",
+           font=font(False, 24), fill=GOLD)
+    d.text((700, 78), "make.fun bounty", font=font(False, 20), fill=(180, 190, 205))
 
-    # ---- headline band ----------------------------------------------
-    d.text((36, 116), "GULF ON EDGE", font=BOLD(60), fill=WHITE)
-    d.text((36, 186), "Iran's drones intercepted over Bahrain",
-           font=BOLD(23), fill=MUTED)
-    d.text((36, 216), "US jets hit missile site on Qeshm Island",
-           font=BOLD(23), fill=MUTED)
+    # ---- Main story ----------------------------------------------
+    d.text((24, 138), "MAIN STORY  —  THE GULF",
+           font=font(True, 20), fill=RED)
+    d.text((24, 162), "GULF WAR WIDENS",
+           font=font(True, 66), fill=INK)
+    d.text((24, 238),
+           "Iran strikes Kuwait and Bahrain as US jets hit Qeshm Island",
+           font=font(False, 26), fill=(52, 58, 68))
 
-    # ---- main scene: the Gulf at dusk, y 240-660 --------------------
-    vgrad(d, (0, 240, 1024, 520), SKY_TOP, SKY_BOT)
-    # low sun with glow
-    for r, a in ((70, 22), (50, 40), (36, 70)):
-        od.ellipse([770 - r, 470 - r, 770 + r, 470 + r],
-                   fill=(242, 206, 154, a))
-    d.ellipse([770 - 30, 470 - 30, 770 + 30, 470 + 30], fill=(245, 217, 168))
-    # sea
-    d.rectangle([0, 520, 1024, 660], fill=SEA)
-    for row, y in enumerate((542, 568, 596, 624, 646)):
-        for k in range(5):
-            x = 40 + ((k * 197 + row * 61) % 900)
-            d.line([(x, y), (x + 44 + row * 3, y)], fill=WAVE, width=2)
-    # Bahrain headland + radar dome, left
-    d.polygon([(0, 660), (0, 602), (60, 576), (140, 560), (230, 566),
-               (300, 600), (320, 660)], fill=LAND)
-    d.rectangle([95, 545, 205, 578], fill=(38, 48, 60))
-    d.pieslice([102, 497, 198, 593], start=180, end=360, fill=DOME)
-    d.arc([102, 497, 198, 593], start=200, end=340, fill=(150, 158, 166),
-          width=2)
-    d.line([(205, 545), (205, 505)], fill=(150, 158, 166), width=3)
-    d.ellipse([201, 499, 209, 507], fill=RED)
-    d.text((102, 614), "BAHRAIN", font=BOLD(15), fill=WHITE)
-    # drone trails arcing in from the upper right
-    for p0, p1, p2 in (((880, 272), (600, 330), (232, 500)),
-                       ((830, 302), (580, 382), (262, 512))):
-        for (x, y) in bezier(p0, p1, p2, 16):
-            d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=RED)
-    drone(d, 640, 322, 12)
-    drone(d, 480, 382, 11)
-    # interceptor burst
-    od.ellipse([560 - 30, 300 - 30, 560 + 30, 300 + 30],
-               fill=(255, 154, 31, 60))
-    star(d, 560, 300, 26, 10, 8, ORANGE)
-    star(d, 560, 300, 13, 5, 8, (255, 214, 90))
-    # Qeshm Island + strike plume, right
-    d.polygon([(700, 660), (720, 590), (790, 560), (880, 545), (960, 560),
-               (1024, 590), (1024, 660)], fill=LAND)
-    for (x, y, r) in ((872, 452, 22), (906, 432, 28), (934, 462, 20)):
-        d.ellipse([x - r, y - r, x + r, y + r], fill=(105, 105, 110))
-    d.polygon([(850, 520), (866, 446), (884, 520)], fill=FLAME)
-    d.polygon([(866, 520), (884, 440), (902, 520)], fill=(255, 176, 66))
-    d.polygon([(876, 520), (888, 470), (900, 520)], fill=(255, 222, 120))
-    d.text((798, 622), "QESHM ISLAND", font=BOLD(15), fill=WHITE)
-    # US Navy ship in the gulf
-    d.polygon([(420, 588), (520, 588), (505, 602), (435, 602)],
-              fill=(120, 130, 140))
-    d.rectangle([460, 574, 490, 588], fill=(140, 150, 160))
-    d.line([(475, 574), (475, 558)], fill=(150, 158, 166), width=2)
-    d.line([(400, 606), (430, 606)], fill=(200, 210, 220), width=2)
-    d.line([(520, 606), (556, 606)], fill=(200, 210, 220), width=2)
-    # fact pill over the sky
-    pill = "THIRD ATTACK IN A WEEK"
-    d.rounded_rectangle([36, 256, 36 + 216, 284], radius=14,
-                        fill=(10, 26, 46))
-    d.text((48, 261), pill, font=BOLD(14), fill=GOLD)
+    # Schematic Gulf scene panel.
+    px0, py0, px1, py1 = 24, 278, 1000, 522
+    d.rectangle([px0, py0, px1, py1], fill=NAVY)
+    d.rectangle([px0, py0, px1, py1], outline=GOLD, width=3)
+    # Land masses (stylised): Arabia lower-left, Iran upper-right.
+    d.polygon([(px0 + 8, py1 - 8), (px0 + 8, py0 + 128),
+               (px0 + 210, py0 + 96), (px0 + 330, py0 + 150),
+               (px0 + 300, py1 - 8)], fill=SAND)
+    d.polygon([(px0 + 560, py0 + 8), (px1 - 8, py0 + 8),
+               (px1 - 8, py0 + 150), (px0 + 700, py0 + 118),
+               (px0 + 560, py0 + 60)], fill=SAND)
+    # Sea label (open water, upper left).
+    d.text((px0 + 36, py0 + 22), "STRAIT OF HORMUZ",
+           font=font(True, 17), fill=(150, 180, 210))
 
-    # ---- secondary cards, y 676-924 ---------------------------------
-    cards = [
-        ("QUAD MEETS AGAIN",
-         "Trump in Manila with Japan, Australia, India \u2014 first summit in two years",
-         "quad"),
-        ("NVIDIA'S $115.8BN QUARTER",
-         "Record sales, up 103% \u2014 board rules out Huang's return",
-         "chip"),
-        ("KERCH BRIDGE HIT AGAIN",
-         "Ukraine hits the Kerch bridge again as Russia pounds Kyiv crossings",
-         "bridge"),
+    # Missile arcs from Iran toward Kuwait / Bahrain.
+    d.line(arc_pts((px0 + 800, py0 + 52), (px0 + 280, py0 + 72), 80),
+           fill=ORANGE, width=3)
+    d.line(arc_pts((px0 + 760, py0 + 62), (px0 + 450, py0 + 107), 50),
+           fill=ORANGE, width=3)
+
+    # Strikes: Qeshm Island, Kuwait, Bahrain, Riyadh pipeline.
+    # (cx, cy, name, note, name_xy, note_xy)
+    strikes = [
+        (290, 350, "KUWAIT", "Ali Al Salem Air Base hit",
+         (322, 328), (322, 351)),
+        (470, 385, "BAHRAIN", "3rd attack in a week",
+         (502, 363), (502, 386)),
+        (760, 420, "QESHM ISLAND", "US jets strike IRGC missile site",
+         (695, 452), (635, 475)),
+        (340, 480, "RIYADH", "Houthi drones hit Saudi pipeline",
+         (372, 458), (372, 481)),
     ]
-    for i, (title, body, kind) in enumerate(cards):
-        x = 36 + i * 324
-        d.rounded_rectangle([x, 676, x + 304, 924], radius=10,
-                            outline=PANEL_LINE, width=2, fill=PANEL)
-        ix, iy = x + 24, 700
-        if kind == "quad":
-            for j, c in enumerate(((58, 89, 152), (200, 60, 50),
-                                   (240, 180, 60), (40, 140, 90))):
-                d.ellipse([ix + j * 34, iy, ix + j * 34 + 28, iy + 28],
-                          fill=c)
-        elif kind == "chip":
-            d.rounded_rectangle([ix, iy, ix + 64, iy + 56], radius=6,
-                                fill=(22, 120, 70))
-            for px in (ix - 8, ix + 64):
-                for py in (iy + 10, iy + 28, iy + 46):
-                    d.rectangle([px, py, px + 8, py + 4], fill=(140, 150, 160))
-            d.text((ix + 8, iy + 15), "NVDA", font=BOLD(16), fill=WHITE)
-        else:
-            d.line([(ix, iy + 44), (ix + 110, iy + 44)], fill=(170, 180, 190),
-                   width=4)
-            for tx in (ix + 18, ix + 78):
-                d.line([(tx, iy + 44), (tx, iy + 4)], fill=(170, 180, 190),
-                       width=4)
-            d.line([(ix, iy + 44), (ix + 18, iy + 4)], fill=(120, 130, 140),
-                   width=2)
-            d.line([(ix + 110, iy + 44), (ix + 78, iy + 4)],
-                   fill=(120, 130, 140), width=2)
-            star(d, ix + 96, iy + 18, 12, 5, 8, ORANGE)
-        for j, line in enumerate(wrap(d, title, BOLD(23), 256)):
-            d.text((x + 24, 772 + j * 28), line, font=BOLD(23), fill=WHITE)
-        by = 772 + 28 * max(len(wrap(d, title, BOLD(23), 256)), 1) + 10
-        for j, line in enumerate(wrap(d, body, REG(16), 256)):
-            d.text((x + 24, by + j * 21), line, font=REG(16), fill=MUTED)
+    for cx, cy, name, note, nxy, txy in strikes:
+        burst(d, cx, cy, 26, ORANGE)
+        burst(d, cx, cy, 15, RED)
+        d.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=(255, 220, 120))
+        d.text(nxy, name, font=font(True, 18), fill=(255, 255, 255))
+        d.text(txy, note, font=font(False, 15), fill=(205, 215, 228))
 
-    # ---- footer -------------------------------------------------------
-    d.rectangle([0, 940, 1024, 942], fill=GOLD)
-    d.text((36, 962), "Wednesday 18 November 2026", font=BOLD(16),
-           fill=WHITE)
-    src = "Sources: Reuters \u00b7 AP \u00b7 Al Jazeera \u00b7 CNN"
-    d.text((988 - d.textlength(src, font=REG(14)), 965), src,
-           font=REG(14), fill=MUTED)
+    # Summary strip under the scene.
+    summary = ("Overnight, Iran fired on US forces in Kuwait and Bahrain; "
+               "Houthis hit two Saudi pipeline pumping stations; the Mossad "
+               "chief lobbied Washington for new joint strikes; Qatar warned "
+               "against escalation; Vance vowed no forever war; Trump said "
+               "it would end fairly soon.")
+    text_block(d, 24, 534, wrap(d, summary, font(False, 17), 976),
+               font(False, 17), (52, 58, 68), leading=22)
 
-    img = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    img.save(OUT, format="PNG")
-    return OUT
+    # ---- Secondary cards ------------------------------------------
+    cards = [
+        ("APEC · SHENZHEN", "Xi greets Trump on the tarmac",
+         "Xi Jinping welcomed Trump in Shenzhen as APEC opened — a gesture "
+         "he skipped in May. Xi met Putin on Wednesday; first-ever "
+         "Trump–Xi–Putin talks are set for Thursday. The US–China tariff "
+         "truce runs to 10 Jan 2027."),
+        ("GAZA WARNING", "Board of Peace warns ceasefire may collapse",
+         "Trump's Board of Peace report, seen by Reuters, accused Israel "
+         "and Hamas of failing to meet commitments. Gaza's ceasefire faces "
+         "imminent collapse as heavy rain floods displacement camps."),
+        ("HORN OF AFRICA", "Ethiopia and Eritrea mass troops at border",
+         "Both sides amassed forces along their shared border; ACLED "
+         "reported artillery shelling and clashes near Badme, raising "
+         "fears of outright war between the historic rivals."),
+    ]
+    card_w, gap, cy0, cy1 = 312, 20, 606, 884
+    for i, (kicker, head, body) in enumerate(cards):
+        x0 = 24 + i * (card_w + gap)
+        x1 = x0 + card_w
+        d.rectangle([x0, cy0, x1, cy1], fill=CARD, outline=GOLD, width=2)
+        d.rectangle([x0, cy0, x1, cy0 + 6], fill=NAVY)
+        y = cy0 + 18
+        d.text((x0 + 14, y), kicker, font=font(True, 16), fill=RED)
+        y += 30
+        y = text_block(d, x0 + 14, y,
+                       wrap(d, head, font(True, 23), card_w - 28),
+                       font(True, 23), INK, leading=29)
+        y += 8
+        text_block(d, x0 + 14, y,
+                   wrap(d, body, font(False, 16), card_w - 28),
+                   font(False, 16), (52, 58, 68), leading=21)
+
+    # ---- Footer ----------------------------------------------------
+    d.rectangle([24, 908, 1000, 912], fill=GOLD)
+    d.text((24, 926), "Sources: Reuters  ·  Associated Press  ·  Al Jazeera  ·  CNN",
+           font=font(False, 19), fill=MUTED)
+    foot2 = ("All events: Wednesday, 18 November 2026. Image drawn by an AI "
+             "agent for the make.fun bounty “Sum up 18 November's world "
+             "news in one image”.")
+    text_block(d, 24, 956, wrap(d, foot2, font(False, 17), 976),
+               font(False, 17), fill=MUTED, leading=21)
+    d.text((24, 1000), "One image, the full day's news — no events from 19 November.",
+           font=font(False, 15), fill=MUTED)
+
+    img.save(OUT, format="PNG", optimize=True)
+    print(f"wrote {OUT} ({os.path.getsize(OUT)} bytes)")
 
 
 if __name__ == "__main__":
-    print(build())
+    main()
